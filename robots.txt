@@ -1,0 +1,23 @@
+User-agent: *
+Allow: /
+
+# Admin areas – no indexing
+Disallow: /admin/
+Disallow: /admin_formation/
+Disallow: /formation/form/
+Disallow: /formation/dashboard.php
+Disallow: /formation/profile.php
+Disallow: /formation/settings.php
+Disallow: /formation/my-formations.php
+Disallow: /formation/certificates.php
+Disallow: /formation/quiz.php
+Disallow: /formation/take-quiz.php
+Disallow: /formation/quiz-result.php
+Disallow: /formation/forum.php
+Disallow: /formation/formation-favorites.php
+Disallow: /formation/logout.php
+Disallow: /certificates/
+Disallow: /*.sql$
+
+# Sitemap – remplace par ton domaine de production
+Sitemap: https://TONDOMAINE.com/sitemap.php

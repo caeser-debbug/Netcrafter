@@ -1,0 +1,67 @@
+﻿# Credentials & configuration sensible
+.env
+.env.local
+.env.production
+.env.development
+.env.staging
+*.env
+config/database.php
+config/mail.php
+db_config.php
+connexion.php
+connection.php
+connect.php
+database_connect.php
+
+# Fichiers de cles & service accounts (Firebase, Google, AWS...)
+*service-account*.json
+*serviceAccount*.json
+*firebase-adminsdk*.json
+google-services.json
+GoogleService-Info.plist
+*credentials*.json
+*secret*.json
+keystore.jks
+*.p12
+*.pem
+*.key
+
+# Logs
+*.log
+debug.log
+error.log
+logs/
+storage/logs/
+
+# Fichiers OS
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+
+# IDE & outils
+.idea/
+.vscode/
+.claude/
+*.suo
+*.user
+
+# Node.js (toujours exclu, meme dans les sous-dossiers)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm/
+.expo/
+.cache/
+
+# Sessions WhatsApp / puppeteer
+.wwebjs_auth/
+.wwebjs_cache/
+_IGNORE_session/
+
+# Sauvegardes & archives locales
+backups/
+*.bak
+*.sql.gz
+*.sql.bak

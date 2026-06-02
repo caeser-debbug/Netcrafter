@@ -1,0 +1,1469 @@
+﻿<?php
+// admin/formation-content.php
+session_start();
+
+// Vérifier si l'admin est connecté
+if (!isset($_SESSION['admin_id'])) {
+    header("Location: login.php");
+    exit;
+}
+
+require_once __DIR__ . '/db.php';
+
+// Connexion à la base de données
+try {
+    $conn = new mysqli($servername, $username, $password, $dbname);
+    
+    if ($conn->connect_error) {
+        die("Échec de la connexion: " . $conn->connect_error);
+    }
+    $conn->set_charset("utf8mb4");
+} catch (Exception $e) {
+    die("Erreur de connexion à la base de données: " . $e->getMessage());
+}
+
+// Récupérer l'ID de la formation
+$formation_id = isset($_GET['id']) ? intval($_GET['id']) : 0;
+
+if ($formation_id <= 0) {
+    header("Location: formations.php");
+    exit;
+}
+
+// Messages
+$success_message = '';
+$error_message = '';
+
+// Traitement des actions
+if ($_SERVER["REQUEST_METHOD"] == "POST") {
+    $action = $_POST['action'] ?? '';
+    
+    switch ($action) {
+        case 'create_module':
+            createModule();
+            break;
+        case 'update_module':
+            updateModule();
+            break;
+        case 'delete_module':
+            deleteModule();
+            break;
+        case 'create_video':
+            createVideo();
+            break;
+        case 'update_video':
+            updateVideo();
+            break;
+        case 'delete_video':
+            deleteVideo();
+            break;
+    }
+    
+    // Redirection pour éviter la re-soumission
+    header("Location: formation-content.php?id=" . $formation_id . 
+           ($success_message ? "&success=" . urlencode($success_message) : "") . 
+           ($error_message ? "&error=" . urlencode($error_message) : ""));
+    exit;
+}
+
+// Récupérer les messages depuis l'URL
+if (isset($_GET['success'])) {
+    $success_message = $_GET['success'];
+}
+if (isset($_GET['error'])) {
+    $error_message = $_GET['error'];
+}
+
+function createModule() {
+    global $conn, $success_message, $error_message, $formation_id;
+    
+    $title = trim($_POST['title']);
+    $description = trim($_POST['description'] ?? '');
+    $order_number = intval($_POST['order_number'] ?? 1);
+    
+    if (empty($title)) {
+        $error_message = "Le titre du module est requis.";
+        return;
+    }
+    
+    $insert_query = "INSERT INTO formation_modules (formation_id, title, description, order_number) VALUES (?, ?, ?, ?)";
+    $stmt = $conn->prepare($insert_query);
+    
+    if (!$stmt) {
+        $error_message = "Erreur de préparation de la requête: " . $conn->error;
+        return;
+    }
+    
+    $stmt->bind_param("issi", $formation_id, $title, $description, $order_number);
+    
+    if ($stmt->execute()) {
+        $success_message = "Module créé avec succès.";
+        
+        // Log de l'activité
+        $log_query = "INSERT INTO admin_logs (admin_id, action, description) VALUES (?, 'create_module', ?)";
+        $log_stmt = $conn->prepare($log_query);
+        if ($log_stmt) {
+            $description_log = "Création du module: $title (Formation ID: $formation_id)";
+            $log_stmt->bind_param("is", $_SESSION['admin_id'], $description_log);
+            $log_stmt->execute();
+            $log_stmt->close();
+        }
+    } else {
+        $error_message = "Erreur lors de la création du module: " . $conn->error;
+    }
+    
+    $stmt->close();
+}
+
+function updateModule() {
+    global $conn, $success_message, $error_message;
+    
+    $module_id = intval($_POST['module_id']);
+    $title = trim($_POST['title']);
+    $description = trim($_POST['description'] ?? '');
+    $order_number = intval($_POST['order_number'] ?? 1);
+    
+    $update_query = "UPDATE formation_modules SET title = ?, description = ?, order_number = ?, updated_at = NOW() WHERE id = ?";
+    $stmt = $conn->prepare($update_query);
+    
+    if (!$stmt) {
+        $error_message = "Erreur de préparation de la requête: " . $conn->error;
+        return;
+    }
+    
+    $stmt->bind_param("ssii", $title, $description, $order_number, $module_id);
+    
+    if ($stmt->execute()) {
+        $success_message = "Module mis à jour avec succès.";
+    } else {
+        $error_message = "Erreur lors de la mise à jour du module.";
+    }
+    
+    $stmt->close();
+}
+
+function deleteModule() {
+    global $conn, $success_message, $error_message;
+    
+    $module_id = intval($_POST['module_id']);
+    
+    // Commencer une transaction
+    $conn->autocommit(FALSE);
+    
+    try {
+        // Supprimer d'abord les vidéos du module
+        $delete_videos_query = "DELETE FROM formation_videos WHERE module_id = ?";
+        $stmt = $conn->prepare($delete_videos_query);
+        if (!$stmt) {
+            throw new Exception("Erreur de préparation: " . $conn->error);
+        }
+        $stmt->bind_param("i", $module_id);
+        $stmt->execute();
+        $stmt->close();
+        
+        // Supprimer le module
+        $delete_query = "DELETE FROM formation_modules WHERE id = ?";
+        $stmt = $conn->prepare($delete_query);
+        if (!$stmt) {
+            throw new Exception("Erreur de préparation: " . $conn->error);
+        }
+        $stmt->bind_param("i", $module_id);
+        $stmt->execute();
+        $stmt->close();
+        
+        $conn->commit();
+        $success_message = "Module supprimé avec succès.";
+    } catch (Exception $e) {
+        $conn->rollback();
+        $error_message = "Erreur lors de la suppression du module: " . $e->getMessage();
+    }
+    
+    $conn->autocommit(TRUE);
+}
+
+function createVideo() {
+    global $conn, $success_message, $error_message;
+    
+    $module_id = intval($_POST['module_id']);
+    $title = trim($_POST['title']);
+    $description = trim($_POST['description'] ?? '');
+    $duration = trim($_POST['duration'] ?? '');
+    $preview_duration = intval($_POST['preview_duration'] ?? 60);
+    $order_number = intval($_POST['order_number'] ?? 1);
+    
+    if (empty($title)) {
+        $error_message = "Le titre de la vidéo est requis.";
+        return;
+    }
+    
+    // Gestion de l'upload de vidéo
+    $video_url = null;
+    if (isset($_FILES['video_file']) && $_FILES['video_file']['error'] === UPLOAD_ERR_OK) {
+        $upload_dir = '../uploads/formation/video/';
+        
+        // Créer le dossier s'il n'existe pas
+        if (!file_exists($upload_dir)) {
+            if (!mkdir($upload_dir, 0755, true)) {
+                $error_message = "Impossible de créer le dossier d'upload.";
+                return;
+            }
+        }
+        
+        $file_extension = strtolower(pathinfo($_FILES['video_file']['name'], PATHINFO_EXTENSION));
+        $allowed_extensions = ['mp4', 'webm', 'avi', 'mov'];
+        
+        if (in_array($file_extension, $allowed_extensions)) {
+            $filename = 'video_' . time() . '_' . rand(1000, 9999) . '.' . $file_extension;
+            $filepath = $upload_dir . $filename;
+            
+            if (move_uploaded_file($_FILES['video_file']['tmp_name'], $filepath)) {
+                $video_url = 'uploads/formation/video/' . $filename;
+            } else {
+                $error_message = "Erreur lors de l'upload de la vidéo.";
+                return;
+            }
+        } else {
+            $error_message = "Format de vidéo non supporté. Utilisez MP4, WebM, AVI ou MOV.";
+            return;
+        }
+    } else {
+        $error_message = "Veuillez sélectionner un fichier vidéo.";
+        return;
+    }
+    
+    $insert_query = "INSERT INTO formation_videos (module_id, title, description, video_url, duration, preview_duration, order_number) VALUES (?, ?, ?, ?, ?, ?, ?)";
+    $stmt = $conn->prepare($insert_query);
+    
+    if (!$stmt) {
+        $error_message = "Erreur de préparation de la requête: " . $conn->error;
+        return;
+    }
+    
+    $stmt->bind_param("isssiii", $module_id, $title, $description, $video_url, $duration, $preview_duration, $order_number);
+    
+    if ($stmt->execute()) {
+        $success_message = "Vidéo ajoutée avec succès.";
+        
+        // Log de l'activité
+        $log_query = "INSERT INTO admin_logs (admin_id, action, description) VALUES (?, 'create_video', ?)";
+        $log_stmt = $conn->prepare($log_query);
+        if ($log_stmt) {
+            $description_log = "Ajout de la vidéo: $title (Module ID: $module_id)";
+            $log_stmt->bind_param("is", $_SESSION['admin_id'], $description_log);
+            $log_stmt->execute();
+            $log_stmt->close();
+        }
+    } else {
+        $error_message = "Erreur lors de l'ajout de la vidéo.";
+    }
+    
+    $stmt->close();
+}
+
+function updateVideo() {
+    global $conn, $success_message, $error_message;
+    
+    $video_id = intval($_POST['video_id']);
+    $title = trim($_POST['title']);
+    $description = trim($_POST['description'] ?? '');
+    $duration = trim($_POST['duration'] ?? '');
+    $preview_duration = intval($_POST['preview_duration'] ?? 60);
+    $order_number = intval($_POST['order_number'] ?? 1);
+    
+    // Gestion de l'upload d'une nouvelle vidéo (optionnel)
+    $video_update = "";
+    $video_param = null;
+    $params = [$title, $description, $duration, $preview_duration, $order_number];
+    $types = "sssii";
+    
+    if (isset($_FILES['video_file']) && $_FILES['video_file']['error'] === UPLOAD_ERR_OK) {
+        $upload_dir = '../uploads/formation/video/';
+        if (!file_exists($upload_dir)) {
+            mkdir($upload_dir, 0755, true);
+        }
+        
+        $file_extension = strtolower(pathinfo($_FILES['video_file']['name'], PATHINFO_EXTENSION));
+        $allowed_extensions = ['mp4', 'webm', 'avi', 'mov'];
+        
+        if (in_array($file_extension, $allowed_extensions)) {
+            $filename = 'video_' . time() . '_' . rand(1000, 9999) . '.' . $file_extension;
+            $filepath = $upload_dir . $filename;
+            
+            if (move_uploaded_file($_FILES['video_file']['tmp_name'], $filepath)) {
+                $video_update = ", video_url = ?";
+                $params[] = 'uploads/formation/video/' . $filename;
+                $types .= "s";
+            }
+        }
+    }
+    
+    $params[] = $video_id;
+    $types .= "i";
+    
+    $update_query = "UPDATE formation_videos SET title = ?, description = ?, duration = ?, preview_duration = ?, order_number = ?, updated_at = NOW() $video_update WHERE id = ?";
+    
+    $stmt = $conn->prepare($update_query);
+    if (!$stmt) {
+        $error_message = "Erreur de préparation de la requête: " . $conn->error;
+        return;
+    }
+    
+    $stmt->bind_param($types, ...$params);
+    
+    if ($stmt->execute()) {
+        $success_message = "Vidéo mise à jour avec succès.";
+    } else {
+        $error_message = "Erreur lors de la mise à jour de la vidéo.";
+    }
+    
+    $stmt->close();
+}
+
+function deleteVideo() {
+    global $conn, $success_message, $error_message;
+    
+    $video_id = intval($_POST['video_id']);
+    
+    // Récupérer le chemin de la vidéo pour la supprimer du serveur
+    $get_video_query = "SELECT video_url FROM formation_videos WHERE id = ?";
+    $stmt = $conn->prepare($get_video_query);
+    if (!$stmt) {
+        $error_message = "Erreur de préparation de la requête: " . $conn->error;
+        return;
+    }
+    
+    $stmt->bind_param("i", $video_id);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $video = $result->fetch_assoc();
+    $stmt->close();
+    
+    if ($video && file_exists('../' . $video['video_url'])) {
+        unlink('../' . $video['video_url']);
+    }
+    
+    $delete_query = "DELETE FROM formation_videos WHERE id = ?";
+    $stmt = $conn->prepare($delete_query);
+    if (!$stmt) {
+        $error_message = "Erreur de préparation de la requête: " . $conn->error;
+        return;
+    }
+    
+    $stmt->bind_param("i", $video_id);
+    
+    if ($stmt->execute()) {
+        $success_message = "Vidéo supprimée avec succès.";
+    } else {
+        $error_message = "Erreur lors de la suppression de la vidéo.";
+    }
+    
+    $stmt->close();
+}
+
+// Récupérer les informations de la formation
+$formation = null;
+$formation_query = "SELECT f.*, c.name as category_name FROM formations f LEFT JOIN formation_categories c ON f.category_id = c.id WHERE f.id = ?";
+$stmt = $conn->prepare($formation_query);
+
+if ($stmt) {
+    $stmt->bind_param("i", $formation_id);
+    $stmt->execute();
+    $formation_result = $stmt->get_result();
+    $formation = $formation_result->fetch_assoc();
+    $stmt->close();
+}
+
+if (!$formation) {
+    header("Location: formations.php");
+    exit;
+}
+
+// Récupérer les modules avec leurs vidéos
+$modules = [];
+$modules_query = "SELECT * FROM formation_modules WHERE formation_id = ? ORDER BY order_number ASC";
+$stmt = $conn->prepare($modules_query);
+
+if ($stmt) {
+    $stmt->bind_param("i", $formation_id);
+    $stmt->execute();
+    $modules_result = $stmt->get_result();
+
+    while ($module = $modules_result->fetch_assoc()) {
+        // Récupérer les vidéos pour ce module
+        $videos_query = "SELECT * FROM formation_videos WHERE module_id = ? ORDER BY order_number ASC";
+        $videos_stmt = $conn->prepare($videos_query);
+        if ($videos_stmt) {
+            $videos_stmt->bind_param("i", $module['id']);
+            $videos_stmt->execute();
+            $videos_result = $videos_stmt->get_result();
+            
+            $videos = [];
+            while ($video = $videos_result->fetch_assoc()) {
+                $videos[] = $video;
+            }
+            $videos_stmt->close();
+            
+            $module['videos'] = $videos;
+            $modules[] = $module;
+        }
+    }
+    $stmt->close();
+}
+
+// Statistiques du contenu
+$stats = ['total_modules' => 0, 'total_videos' => 0, 'videos_with_duration' => 0];
+$stats_query = "SELECT 
+    COUNT(DISTINCT fm.id) as total_modules,
+    COUNT(DISTINCT fv.id) as total_videos,
+    COUNT(CASE WHEN fv.duration IS NOT NULL AND fv.duration != '' THEN 1 END) as videos_with_duration
+    FROM formation_modules fm 
+    LEFT JOIN formation_videos fv ON fm.id = fv.module_id 
+    WHERE fm.formation_id = ?";
+
+$stmt = $conn->prepare($stats_query);
+if ($stmt) {
+    $stmt->bind_param("i", $formation_id);
+    $stmt->execute();
+    $stats_result = $stmt->get_result();
+    $stats_data = $stats_result->fetch_assoc();
+    if ($stats_data) {
+        $stats = $stats_data;
+    }
+    $stmt->close();
+}
+
+// S'assurer que les valeurs sont des entiers
+$stats['total_modules'] = intval($stats['total_modules'] ?? 0);
+$stats['total_videos'] = intval($stats['total_videos'] ?? 0);
+$stats['videos_with_duration'] = intval($stats['videos_with_duration'] ?? 0);
+
+$conn->close();
+?>
+
+<!DOCTYPE html>
+<html lang="fr" class="light scroll">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Contenu Formation: <?php echo htmlspecialchars($formation['title']); ?> - Admin Netcrafter</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/aos/2.3.4/aos.css">
+    
+    <style>
+        html {
+            scroll-behavior: smooth;
+            overflow-x: hidden;
+        }
+        
+        body {
+            width: 100%;
+            max-width: 100vw;
+            overflow-x: hidden;
+        }
+
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 4px;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+
+        /* Side Navigation */
+        .sidenav {
+            transition: all 0.3s ease;
+            z-index: 50;
+        }
+        
+        @media (max-width: 768px) {
+            .sidenav {
+                width: 280px;
+                transform: translateX(-100%);
+            }
+            
+            .sidenav.open {
+                transform: translateX(0);
+            }
+        }
+        
+        @media (min-width: 768px) {
+            .sidenav {
+                width: 280px;
+            }
+            
+            .sidenav.collapsed {
+                width: 70px;
+            }
+            
+            .sidenav.collapsed .nav-text {
+                opacity: 0;
+                white-space: nowrap;
+            }
+            
+            .content-area {
+                transition: all 0.3s ease;
+                margin-left: 280px;
+            }
+            
+            .content-area.nav-collapsed {
+                margin-left: 70px;
+            }
+        }
+
+        .overlay {
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.3s ease, visibility 0.3s ease;
+        }
+        
+        .overlay.active {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        /* Module and video cards */
+        .module-card {
+            transition: all 0.3s ease;
+        }
+        
+        .module-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.1);
+        }
+
+        /* Modal styles */
+        .modal {
+            backdrop-filter: blur(4px);
+        }
+    </style>
+
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        netblue: {
+                            100: '#E6F2FF',
+                            200: '#B8D4FF',
+                            300: '#8AB6FF',
+                            400: '#5C98FF',
+                            500: '#3B82F6',
+                            600: '#1A6BE2',
+                            700: '#0055CC',
+                            800: '#003F99',
+                            900: '#002966'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-gray-50 dark:bg-gray-900 text-gray-800 dark:text-white transition-colors duration-300">
+    <!-- Overlay for mobile menu -->
+    <div id="overlay" class="fixed inset-0 bg-black bg-opacity-50 z-40 overlay" onclick="toggleMobileMenu()"></div>
+    
+    <!-- Side Navigation -->
+    <aside id="sidenav" class="sidenav fixed h-full bg-white dark:bg-gray-800 shadow-lg z-50">
+        <!-- Logo and collapse button -->
+        <div class="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+            <div class="flex items-center">
+                <img src="../image/logo-n.png" alt="Netcrafter Logo" class="h-8 mr-2">
+                <span class="text-lg font-bold text-netblue-600 dark:text-netblue-400 nav-text transition-opacity duration-300">ADMIN</span>
+            </div>
+            <button id="sidenav-toggle" class="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 focus:outline-none md:block hidden">
+                <i class="fas fa-chevron-left"></i>
+            </button>
+        </div>
+        
+        <!-- Navigation Menu -->
+        <nav class="mt-4 px-2 overflow-y-auto" style="max-height: calc(100vh - 120px);">
+            <ul class="space-y-1">
+                <li>
+                    <a href="dashboard.php" class="flex items-center px-3 py-2 text-base rounded-lg text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors duration-200">
+                        <i class="fas fa-tachometer-alt w-6 text-center"></i>
+                        <span class="ml-2 nav-text">Tableau de bord</span>
+                    </a>
+                </li>
+                <li>
+                    <a href="users.php" class="flex items-center px-3 py-2 text-base rounded-lg text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors duration-200">
+                        <i class="fas fa-users w-6 text-center"></i>
+                        <span class="ml-2 nav-text">Utilisateurs</span>
+                    </a>
+                </li>
+                <li>
+                    <a href="formations.php" class="flex items-center px-3 py-2 text-base rounded-lg bg-netblue-100 dark:bg-netblue-900/30 text-netblue-800 dark:text-netblue-300">
+                        <i class="fas fa-graduation-cap w-6 text-center"></i>
+                        <span class="ml-2 nav-text">Formations</span>
+                    </a>
+                </li>
+                <li>
+                    <a href="subscriptions.php" class="flex items-center px-3 py-2 text-base rounded-lg text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors duration-200">
+                        <i class="fas fa-credit-card w-6 text-center"></i>
+                        <span class="ml-2 nav-text">Abonnements</span>
+                    </a>
+                </li>
+                <li>
+                    <a href="quiz.php" class="flex items-center px-3 py-2 text-base rounded-lg text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors duration-200">
+                        <i class="fas fa-question-circle w-6 text-center"></i>
+                        <span class="ml-2 nav-text">Quizz</span>
+                    </a>
+                </li>
+                <li>
+                    <a href="certificates.php" class="flex items-center px-3 py-2 text-base rounded-lg text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors duration-200">
+                        <i class="fas fa-certificate w-6 text-center"></i>
+                        <span class="ml-2 nav-text">Certificats</span>
+                    </a>
+                </li>
+                <li>
+                    <a href="settings.php" class="flex items-center px-3 py-2 text-base rounded-lg text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors duration-200">
+                        <i class="fas fa-cog w-6 text-center"></i>
+                        <span class="ml-2 nav-text">Paramètres</span>
+                    </a>
+                </li>
+            </ul>
+        </nav>
+        
+        <!-- Logout -->
+        <div class="absolute bottom-0 left-0 right-0 border-t border-gray-200 dark:border-gray-700 p-4 bg-white dark:bg-gray-800">
+            <a href="logout.php" class="flex items-center justify-center px-3 py-2 rounded-lg text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors duration-200">
+                <i class="fas fa-sign-out-alt w-6 text-center"></i>
+                <span class="ml-2 nav-text">Déconnexion</span>
+            </a>
+        </div>
+    </aside>
+    
+    <!-- Main Content -->
+    <div id="content" class="content-area transition-all duration-300">
+        <!-- Top Bar -->
+        <header class="bg-white dark:bg-gray-800 shadow-sm sticky top-0 z-20">
+            <div class="flex items-center justify-between px-4 py-3">
+                <!-- Mobile Menu Toggle -->
+                <button id="mobile-menu-toggle" class="md:hidden text-gray-700 dark:text-white focus:outline-none">
+                    <i class="fas fa-bars text-2xl"></i>
+                </button>
+                
+                <!-- Breadcrumb -->
+                <div class="flex items-center space-x-2 text-sm">
+                    <a href="formations.php" class="text-gray-500 hover:text-netblue-600 dark:hover:text-netblue-400">Formations</a>
+                    <i class="fas fa-chevron-right text-gray-400"></i>
+                    <span class="text-gray-800 dark:text-white font-medium"><?php echo htmlspecialchars($formation['title']); ?></span>
+                </div>
+                
+                <!-- Actions -->
+                <div class="flex items-center space-x-3">
+                    <button onclick="showModuleModal()" class="bg-netblue-600 hover:bg-netblue-700 text-white px-4 py-2 rounded-lg transition-colors text-sm">
+                        <i class="fas fa-plus mr-2"></i>Nouveau Module
+                    </button>
+                </div>
+            </div>
+        </header>
+        
+        <!-- Messages -->
+        <?php if (!empty($success_message)): ?>
+        <div class="mx-4 mt-4 p-4 bg-green-100 border border-green-400 text-green-700 rounded-lg">
+            <i class="fas fa-check-circle mr-2"></i>
+            <?php echo htmlspecialchars($success_message); ?>
+        </div>
+        <?php endif; ?>
+        
+        <?php if (!empty($error_message)): ?>
+        <div class="mx-4 mt-4 p-4 bg-red-100 border border-red-400 text-red-700 rounded-lg">
+            <i class="fas fa-exclamation-circle mr-2"></i>
+            <?php echo htmlspecialchars($error_message); ?>
+        </div>
+        <?php endif; ?>
+        
+        <!-- Main Content Area -->
+        <main class="p-4">
+            <!-- Formation Info -->
+            <div class="bg-white dark:bg-gray-800 rounded-xl shadow-lg p-6 mb-8" data-aos="fade-up">
+                <div class="flex items-start justify-between">
+                    <div class="flex-1">
+                        <h1 class="text-2xl font-bold mb-2 dark:text-white"><?php echo htmlspecialchars($formation['title']); ?></h1>
+                        <div class="flex items-center space-x-4 text-sm text-gray-600 dark:text-gray-400">
+                            <span><i class="fas fa-tag mr-1"></i><?php echo htmlspecialchars($formation['category_name'] ?? 'Non défini'); ?></span>
+                            <span><i class="fas fa-signal mr-1"></i><?php echo ucfirst($formation['level']); ?></span>
+                            <span><i class="fas fa-coins mr-1"></i><?php echo number_format($formation['price_per_month']); ?> F/mois</span>
+                        </div>
+                        <p class="text-gray-700 dark:text-gray-300 mt-3"><?php echo htmlspecialchars($formation['description']); ?></p>
+                    </div>
+                    <div class="ml-6">
+                        <span class="px-3 py-1 text-sm font-semibold rounded-full <?php echo $formation['status'] === 'active' ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300' : 'bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-300'; ?>">
+                            <?php echo ucfirst($formation['status']); ?>
+                        </span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Stats Cards -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                <div class="bg-white dark:bg-gray-800 rounded-xl shadow-lg p-6" data-aos="fade-up">
+                    <div class="flex items-center">
+                        <div class="flex-shrink-0 bg-blue-100 dark:bg-blue-900 p-3 rounded-lg">
+                            <i class="fas fa-layer-group text-2xl text-blue-600 dark:text-blue-400"></i>
+                        </div>
+                        <div class="ml-4">
+                            <h3 class="text-sm font-medium text-gray-600 dark:text-gray-400">Modules</h3>
+                            <p class="text-2xl font-bold text-gray-800 dark:text-white"><?php echo $stats['total_modules']; ?></p>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="bg-white dark:bg-gray-800 rounded-xl shadow-lg p-6" data-aos="fade-up" data-aos-delay="100">
+                    <div class="flex items-center">
+                        <div class="flex-shrink-0 bg-green-100 dark:bg-green-900 p-3 rounded-lg">
+                            <i class="fas fa-play-circle text-2xl text-green-600 dark:text-green-400"></i>
+                        </div>
+                        <div class="ml-4">
+                            <h3 class="text-sm font-medium text-gray-600 dark:text-gray-400">Vidéos</h3>
+                            <p class="text-2xl font-bold text-gray-800 dark:text-white"><?php echo $stats['total_videos']; ?></p>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="bg-white dark:bg-gray-800 rounded-xl shadow-lg p-6" data-aos="fade-up" data-aos-delay="200">
+                    <div class="flex items-center">
+                        <div class="flex-shrink-0 bg-purple-100 dark:bg-purple-900 p-3 rounded-lg">
+                            <i class="fas fa-clock text-2xl text-purple-600 dark:text-purple-400"></i>
+                        </div>
+                        <div class="ml-4">
+                            <h3 class="text-sm font-medium text-gray-600 dark:text-gray-400">Complétude</h3>
+                            <p class="text-2xl font-bold text-gray-800 dark:text-white"><?php echo $stats['videos_with_duration']; ?>/<?php echo $stats['total_videos']; ?></p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Modules Content -->
+            <div class="space-y-6" data-aos="fade-up">
+                <?php if (empty($modules)): ?>
+                <!-- Empty State -->
+                <div class="bg-white dark:bg-gray-800 rounded-xl shadow-lg p-12 text-center">
+                    <i class="fas fa-layer-group text-6xl text-gray-400 mb-4"></i>
+                    <h3 class="text-xl font-bold mb-2 dark:text-white">Aucun module créé</h3>
+                    <p class="text-gray-600 dark:text-gray-400 mb-6">Commencez par créer le premier module de cette formation.</p>
+                    <button onclick="showModuleModal()" class="bg-netblue-600 hover:bg-netblue-700 text-white px-6 py-3 rounded-lg transition-colors">
+                        <i class="fas fa-plus mr-2"></i>Créer le premier module
+                    </button>
+                </div>
+                <?php else: ?>
+                <!-- Modules List -->
+                <?php foreach ($modules as $module): ?>
+                <div class="module-card bg-white dark:bg-gray-800 rounded-xl shadow-lg overflow-hidden">
+                    <!-- Module Header -->
+                    <div class="p-6 border-b border-gray-200 dark:border-gray-700">
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center space-x-4">
+                                <div class="flex-shrink-0 bg-netblue-100 dark:bg-netblue-900 p-2 rounded-lg">
+                                    <i class="fas fa-grip-vertical text-netblue-600 dark:text-netblue-400"></i>
+                                </div>
+                                <div>
+                                    <h3 class="text-lg font-bold dark:text-white">
+                                        Module <?php echo $module['order_number']; ?>: <?php echo htmlspecialchars($module['title']); ?>
+                                    </h3>
+                                    <?php if (!empty($module['description'])): ?>
+                                    <p class="text-gray-600 dark:text-gray-400 text-sm mt-1"><?php echo htmlspecialchars($module['description']); ?></p>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                            <div class="flex items-center space-x-2">
+                                <span class="text-sm text-gray-500 dark:text-gray-400">
+                                    <?php echo count($module['videos']); ?> vidéo<?php echo count($module['videos']) > 1 ? 's' : ''; ?>
+                                </span>
+                                <button onclick="showVideoModal(<?php echo $module['id']; ?>)" class="text-green-600 hover:text-green-800 dark:text-green-400 p-2" title="Ajouter une vidéo">
+                                    <i class="fas fa-plus"></i>
+                                </button>
+                                <button onclick="editModule(<?php echo $module['id']; ?>, '<?php echo addslashes($module['title']); ?>', '<?php echo addslashes($module['description']); ?>', <?php echo $module['order_number']; ?>)" class="text-blue-600 hover:text-blue-800 dark:text-blue-400 p-2" title="Modifier le module">
+                                    <i class="fas fa-edit"></i>
+                                </button>
+                                <button onclick="deleteModule(<?php echo $module['id']; ?>, '<?php echo addslashes($module['title']); ?>')" class="text-red-600 hover:text-red-800 dark:text-red-400 p-2" title="Supprimer le module">
+                                    <i class="fas fa-trash"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Videos List -->
+                    <div class="p-6">
+                        <?php if (empty($module['videos'])): ?>
+                        <div class="text-center py-8">
+                            <i class="fas fa-video text-4xl text-gray-400 mb-3"></i>
+                            <p class="text-gray-500 dark:text-gray-400 mb-4">Aucune vidéo dans ce module</p>
+                            <button onclick="showVideoModal(<?php echo $module['id']; ?>)" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm transition-colors">
+                                <i class="fas fa-plus mr-2"></i>Ajouter une vidéo
+                            </button>
+                        </div>
+                        <?php else: ?>
+                        <div class="space-y-4">
+                            <?php foreach ($module['videos'] as $video): ?>
+                            <div class="bg-gray-50 dark:bg-gray-700 rounded-lg p-4 flex items-center justify-between">
+                                <div class="flex items-center space-x-4">
+                                    <div class="flex-shrink-0 bg-gray-200 dark:bg-gray-600 p-2 rounded">
+                                        <i class="fas fa-grip-vertical text-gray-500"></i>
+                                    </div>
+                                    <div class="flex-shrink-0">
+                                        <div class="w-16 h-12 bg-black rounded flex items-center justify-center">
+                                            <i class="fas fa-play text-white text-sm"></i>
+                                        </div>
+                                    </div>
+                                    <div class="flex-1">
+                                        <h4 class="font-medium dark:text-white">
+                                            <?php echo $video['order_number']; ?>. <?php echo htmlspecialchars($video['title']); ?>
+                                        </h4>
+                                        <div class="flex items-center space-x-4 text-sm text-gray-500 dark:text-gray-400 mt-1">
+                                            <?php if (!empty($video['duration'])): ?>
+                                            <span><i class="fas fa-clock mr-1"></i><?php echo $video['duration']; ?></span>
+                                            <?php endif; ?>
+                                            <span><i class="fas fa-eye mr-1"></i>Aperçu: <?php echo $video['preview_duration']; ?>s</span>
+                                        </div>
+                                        <?php if (!empty($video['description'])): ?>
+                                        <p class="text-sm text-gray-600 dark:text-gray-400 mt-1"><?php echo htmlspecialchars($video['description']); ?></p>
+                                        <?php endif; ?>
+                                    </div>
+                                </div>
+                                <div class="flex items-center space-x-2">
+                                    <button onclick="previewVideo('<?php echo $video['video_url']; ?>', '<?php echo addslashes($video['title']); ?>')" class="text-blue-600 hover:text-blue-800 dark:text-blue-400 p-2" title="Prévisualiser">
+                                        <i class="fas fa-eye"></i>
+                                    </button>
+                                    <button onclick="editVideo(<?php echo $video['id']; ?>)" class="text-green-600 hover:text-green-800 dark:text-green-400 p-2" title="Modifier">
+                                        <i class="fas fa-edit"></i>
+                                    </button>
+                                    <button onclick="deleteVideo(<?php echo $video['id']; ?>, '<?php echo addslashes($video['title']); ?>')" class="text-red-600 hover:text-red-800 dark:text-red-400 p-2" title="Supprimer">
+                                        <i class="fas fa-trash"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <?php endforeach; ?>
+                        </div>
+                        <?php endif; ?>
+                    </div>
+                </div>
+                <?php endforeach; ?>
+                <?php endif; ?>
+            </div>
+        </main>
+    </div>
+    
+    <!-- Module Modal -->
+    <div id="moduleModal" class="fixed inset-0 z-50 hidden">
+        <div class="modal flex items-center justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
+            <div class="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity" onclick="closeModuleModal()"></div>
+            
+            <div class="inline-block align-bottom bg-white dark:bg-gray-800 rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full">
+                <form id="moduleForm" method="POST">
+                    <div class="bg-white dark:bg-gray-800 px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
+                        <div class="sm:flex sm:items-start">
+                            <div class="mt-3 text-center sm:mt-0 sm:text-left w-full">
+                                <h3 class="text-lg leading-6 font-medium text-gray-900 dark:text-white" id="moduleModalTitle">
+                                    Créer un module
+                                </h3>
+                                
+                                <div class="mt-6 space-y-4">
+                                    <input type="hidden" name="action" id="moduleAction" value="create_module">
+                                    <input type="hidden" name="module_id" id="moduleId" value="">
+                                    
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                                            Titre du module *
+                                        </label>
+                                        <input type="text" name="title" id="moduleTitle" required class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-netblue-500">
+                                    </div>
+                                    
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                                            Description
+                                        </label>
+                                        <textarea name="description" id="moduleDescription" rows="3" class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-netblue-500"></textarea>
+                                    </div>
+                                    
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                                            Ordre
+                                        </label>
+                                        <input type="number" name="order_number" id="moduleOrder" min="1" value="<?php echo count($modules) + 1; ?>" required class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-netblue-500">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="bg-gray-50 dark:bg-gray-700 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
+                        <button type="submit" class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-netblue-600 text-base font-medium text-white hover:bg-netblue-700 focus:outline-none sm:ml-3 sm:w-auto sm:text-sm">
+                            <i class="fas fa-save mr-2"></i>Sauvegarder
+                        </button>
+                        <button type="button" onclick="closeModuleModal()" class="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm dark:bg-gray-800 dark:text-gray-300 dark:border-gray-600 dark:hover:bg-gray-700">
+                            Annuler
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Video Modal -->
+    <div id="videoModal" class="fixed inset-0 z-50 hidden">
+        <div class="modal flex items-center justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
+            <div class="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity" onclick="closeVideoModal()"></div>
+            
+            <div class="inline-block align-bottom bg-white dark:bg-gray-800 rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-2xl sm:w-full max-h-screen overflow-y-auto">
+                <form id="videoForm" method="POST" enctype="multipart/form-data">
+                    <div class="bg-white dark:bg-gray-800 px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
+                        <div class="sm:flex sm:items-start">
+                            <div class="mt-3 text-center sm:mt-0 sm:text-left w-full">
+                                <h3 class="text-lg leading-6 font-medium text-gray-900 dark:text-white" id="videoModalTitle">
+                                    Ajouter une vidéo
+                                </h3>
+                                
+                                <div class="mt-6 space-y-4">
+                                    <input type="hidden" name="action" id="videoAction" value="create_video">
+                                    <input type="hidden" name="video_id" id="videoId" value="">
+                                    <input type="hidden" name="module_id" id="videoModuleId" value="">
+                                    
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                                            Titre de la vidéo *
+                                        </label>
+                                        <input type="text" name="title" id="videoTitle" required class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-netblue-500">
+                                    </div>
+                                    
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                                            Description
+                                        </label>
+                                        <textarea name="description" id="videoDescription" rows="3" class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-netblue-500"></textarea>
+                                    </div>
+                                    
+                                    <div class="grid grid-cols-2 gap-4">
+                                        <div>
+                                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                                                Durée (ex: 15:30)
+                                            </label>
+                                            <input type="text" name="duration" id="videoDuration" placeholder="mm:ss" pattern="^[0-9]+:[0-5][0-9]$" class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-netblue-500">
+                                        </div>
+                                        
+                                        <div>
+                                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                                                Aperçu (secondes)
+                                            </label>
+                                            <input type="number" name="preview_duration" id="videoPreviewDuration" min="30" max="300" value="60" class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-netblue-500">
+                                        </div>
+                                    </div>
+                                    
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                                            Ordre
+                                        </label>
+                                        <input type="number" name="order_number" id="videoOrder" min="1" value="1" required class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-netblue-500">
+                                    </div>
+                                    
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                                            Fichier vidéo <span id="videoFileRequired">*</span>
+                                        </label>
+                                        <input type="file" name="video_file" id="videoFile" accept="video/*" class="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-netblue-50 file:text-netblue-700 hover:file:bg-netblue-100 dark:file:bg-netblue-900 dark:file:text-netblue-300">
+                                        <p class="text-xs text-gray-500 mt-1">MP4, WebM, AVI ou MOV. Max 100MB.</p>
+                                        <div id="uploadProgress" class="hidden mt-2">
+                                            <div class="bg-gray-200 rounded-full h-2">
+                                                <div id="progressBar" class="bg-netblue-600 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+                                            </div>
+                                            <p id="progressText" class="text-xs text-gray-500 mt-1">Upload en cours...</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="bg-gray-50 dark:bg-gray-700 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
+                        <button type="submit" id="videoSubmitBtn" class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-netblue-600 text-base font-medium text-white hover:bg-netblue-700 focus:outline-none sm:ml-3 sm:w-auto sm:text-sm">
+                            <i class="fas fa-save mr-2"></i>Sauvegarder
+                        </button>
+                        <button type="button" onclick="closeVideoModal()" class="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm dark:bg-gray-800 dark:text-gray-300 dark:border-gray-600 dark:hover:bg-gray-700">
+                            Annuler
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Video Preview Modal -->
+    <div id="videoPreviewModal" class="fixed inset-0 z-50 hidden">
+        <div class="modal flex items-center justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
+            <div class="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity" onclick="closeVideoPreviewModal()"></div>
+            
+            <div class="inline-block align-bottom bg-white dark:bg-gray-800 rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-4xl sm:w-full">
+                <div class="bg-white dark:bg-gray-800 px-4 pt-5 pb-4 sm:p-6">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="text-lg leading-6 font-medium text-gray-900 dark:text-white" id="videoPreviewTitle">
+                            Prévisualisation vidéo
+                        </h3>
+                        <button onclick="closeVideoPreviewModal()" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+                            <i class="fas fa-times text-xl"></i>
+                        </button>
+                    </div>
+                    
+                    <div class="aspect-video bg-black rounded-lg overflow-hidden">
+                        <video id="videoPreviewPlayer" class="w-full h-full" controls>
+                            Votre navigateur ne supporte pas la balise vidéo.
+                        </video>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- AOS Library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/aos/2.3.4/aos.js"></script>
+
+    <script>
+        // Initialize AOS
+        AOS.init({
+            duration: 800,
+            once: true,
+            disable: window.innerWidth < 768 ? true : false
+        });
+
+        document.addEventListener('DOMContentLoaded', function() {
+            // Sidebar functionality
+            const sidenav = document.getElementById('sidenav');
+            const sidenavToggle = document.getElementById('sidenav-toggle');
+            const content = document.getElementById('content');
+            const mobileMenuToggle = document.getElementById('mobile-menu-toggle');
+            const overlay = document.getElementById('overlay');
+            
+            // Desktop sidebar toggle
+            function toggleSidenav() {
+                if (window.innerWidth >= 768) {
+                    sidenav.classList.toggle('collapsed');
+                    content.classList.toggle('nav-collapsed');
+                    
+                    const icon = sidenavToggle.querySelector('i');
+                    if (sidenav.classList.contains('collapsed')) {
+                        icon.classList.remove('fa-chevron-left');
+                        icon.classList.add('fa-chevron-right');
+                    } else {
+                        icon.classList.remove('fa-chevron-right');
+                        icon.classList.add('fa-chevron-left');
+                    }
+                    
+                    localStorage.setItem('adminSidenavCollapsed', sidenav.classList.contains('collapsed'));
+                }
+            }
+            
+            if (sidenavToggle) {
+                sidenavToggle.addEventListener('click', toggleSidenav);
+            }
+            if (mobileMenuToggle) {
+                mobileMenuToggle.addEventListener('click', toggleMobileMenu);
+            }
+            
+            // Restore sidebar state
+            const savedState = localStorage.getItem('adminSidenavCollapsed');
+            if (savedState === 'true' && window.innerWidth >= 768) {
+                sidenav.classList.add('collapsed');
+                content.classList.add('nav-collapsed');
+                const icon = sidenavToggle?.querySelector('i');
+                if (icon) {
+                    icon.classList.remove('fa-chevron-left');
+                    icon.classList.add('fa-chevron-right');
+                }
+            }
+            
+            // Form submission handlers
+            let isSubmitting = false;
+            
+            document.getElementById('moduleForm').addEventListener('submit', function(e) {
+                if (isSubmitting) {
+                    e.preventDefault();
+                    return false;
+                }
+                
+                isSubmitting = true;
+                const submitBtn = this.querySelector('button[type="submit"]');
+                const originalText = submitBtn.innerHTML;
+                submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Sauvegarde...';
+                submitBtn.disabled = true;
+                
+                setTimeout(() => {
+                    isSubmitting = false;
+                    submitBtn.innerHTML = originalText;
+                    submitBtn.disabled = false;
+                }, 5000);
+            });
+            
+            document.getElementById('videoForm').addEventListener('submit', function(e) {
+                if (isSubmitting) {
+                    e.preventDefault();
+                    return false;
+                }
+                
+                const fileInput = document.getElementById('videoFile');
+                const videoAction = document.getElementById('videoAction').value;
+                
+                if (videoAction === 'create_video' && (!fileInput.files || !fileInput.files.length)) {
+                    e.preventDefault();
+                    showNotification('Veuillez sélectionner un fichier vidéo', 'error');
+                    return false;
+                }
+                
+                if (fileInput.files && fileInput.files.length && fileInput.files[0].size > 100 * 1024 * 1024) {
+                    e.preventDefault();
+                    showNotification('Le fichier vidéo est trop volumineux (max 100MB)', 'error');
+                    return false;
+                }
+                
+                isSubmitting = true;
+                const submitBtn = document.getElementById('videoSubmitBtn');
+                const originalText = submitBtn.innerHTML;
+                submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Upload...';
+                submitBtn.disabled = true;
+                
+                document.getElementById('uploadProgress').classList.remove('hidden');
+                
+                setTimeout(() => {
+                    isSubmitting = false;
+                    submitBtn.innerHTML = originalText;
+                    submitBtn.disabled = false;
+                    document.getElementById('uploadProgress').classList.add('hidden');
+                }, 30000);
+            });
+            
+            // Validation du format de durée
+            document.getElementById('videoDuration').addEventListener('input', function() {
+                const value = this.value;
+                const pattern = /^[0-9]+:[0-5][0-9]$/;
+                
+                if (value && !pattern.test(value)) {
+                    this.setCustomValidity('Format attendu: mm:ss (ex: 15:30)');
+                } else {
+                    this.setCustomValidity('');
+                }
+            });
+            
+            // Prévisualisation du fichier sélectionné
+            document.getElementById('videoFile').addEventListener('change', function(e) {
+                const file = e.target.files[0];
+                if (file) {
+                    const fileSize = (file.size / 1024 / 1024).toFixed(2);
+                    showNotification(`Fichier sélectionné: ${file.name} (${fileSize} MB)`, 'info');
+                }
+            });
+        });
+        
+        // Global functions
+        function toggleMobileMenu() {
+            const sidenav = document.getElementById('sidenav');
+            const overlay = document.getElementById('overlay');
+            
+            sidenav.classList.toggle('open');
+            overlay.classList.toggle('active');
+            document.body.classList.toggle('overflow-hidden');
+        }
+        
+        // Module management functions
+        function showModuleModal() {
+            document.getElementById('moduleModalTitle').textContent = 'Créer un module';
+            document.getElementById('moduleAction').value = 'create_module';
+            document.getElementById('moduleId').value = '';
+            document.getElementById('moduleForm').reset();
+            document.getElementById('moduleOrder').value = <?php echo count($modules) + 1; ?>;
+            document.getElementById('moduleModal').classList.remove('hidden');
+        }
+        
+        function editModule(moduleId, title, description, orderNumber) {
+            document.getElementById('moduleModalTitle').textContent = 'Modifier le module';
+            document.getElementById('moduleAction').value = 'update_module';
+            document.getElementById('moduleId').value = moduleId;
+            document.getElementById('moduleTitle').value = title;
+            document.getElementById('moduleDescription').value = description;
+            document.getElementById('moduleOrder').value = orderNumber;
+            document.getElementById('moduleModal').classList.remove('hidden');
+        }
+        
+        function closeModuleModal() {
+            document.getElementById('moduleModal').classList.add('hidden');
+            document.getElementById('moduleForm').reset();
+        }
+        
+        function deleteModule(moduleId, moduleTitle) {
+            if (confirm(`Êtes-vous sûr de vouloir supprimer le module "${moduleTitle}" ?\n\nToutes les vidéos de ce module seront également supprimées !`)) {
+                const form = document.createElement('form');
+                form.method = 'POST';
+                form.innerHTML = `
+                    <input type="hidden" name="action" value="delete_module">
+                    <input type="hidden" name="module_id" value="${moduleId}">
+                `;
+                document.body.appendChild(form);
+                form.submit();
+            }
+        }
+        
+        // Video management functions
+        function showVideoModal(moduleId) {
+            document.getElementById('videoModalTitle').textContent = 'Ajouter une vidéo';
+            document.getElementById('videoAction').value = 'create_video';
+            document.getElementById('videoId').value = '';
+            document.getElementById('videoModuleId').value = moduleId;
+            document.getElementById('videoForm').reset();
+            document.getElementById('videoFile').required = true;
+            document.getElementById('videoFileRequired').style.display = 'inline';
+            
+            // Calculer le prochain numéro d'ordre pour ce module
+            const moduleVideos = document.querySelectorAll(`[data-module-id="${moduleId}"] .video-item`);
+            document.getElementById('videoOrder').value = moduleVideos.length + 1;
+            
+            document.getElementById('videoModal').classList.remove('hidden');
+        }
+        
+        function editVideo(videoId) {
+            fetch(`api/formations.php?action=get_video&id=${videoId}`)
+                .then(r => r.json())
+                .then(data => {
+                    if (!data.success) {
+                        showNotification('Erreur: ' + data.message, 'error');
+                        return;
+                    }
+                    const v = data.video;
+                    document.getElementById('videoModalTitle').textContent = 'Modifier la vidéo';
+                    document.getElementById('videoAction').value = 'update_video';
+                    document.getElementById('videoId').value = v.id;
+                    document.getElementById('videoModuleId').value = v.module_id;
+                    document.getElementById('videoTitle').value = v.title || '';
+                    document.getElementById('videoDescription').value = v.description || '';
+                    document.getElementById('videoDuration').value = v.duration || '';
+                    document.getElementById('videoPreviewDuration').value = v.preview_duration || 60;
+                    document.getElementById('videoOrder').value = v.order_number || 1;
+                    // File not required on edit
+                    document.getElementById('videoFile').required = false;
+                    if (document.getElementById('videoFileRequired')) {
+                        document.getElementById('videoFileRequired').style.display = 'none';
+                    }
+                    document.getElementById('videoModal').classList.remove('hidden');
+                })
+                .catch(err => showNotification('Erreur réseau: ' + err.message, 'error'));
+        }
+        
+        function closeVideoModal() {
+            document.getElementById('videoModal').classList.add('hidden');
+            document.getElementById('videoForm').reset();
+            document.getElementById('uploadProgress').classList.add('hidden');
+        }
+        
+        function deleteVideo(videoId, videoTitle) {
+            if (confirm(`Êtes-vous sûr de vouloir supprimer la vidéo "${videoTitle}" ?`)) {
+                const form = document.createElement('form');
+                form.method = 'POST';
+                form.innerHTML = `
+                    <input type="hidden" name="action" value="delete_video">
+                    <input type="hidden" name="video_id" value="${videoId}">
+                `;
+                document.body.appendChild(form);
+                form.submit();
+            }
+        }
+        
+        function previewVideo(videoUrl, videoTitle) {
+            document.getElementById('videoPreviewTitle').textContent = videoTitle;
+            const player = document.getElementById('videoPreviewPlayer');
+            player.src = '../' + videoUrl;
+            player.load();
+            document.getElementById('videoPreviewModal').classList.remove('hidden');
+        }
+        
+        function closeVideoPreviewModal() {
+            document.getElementById('videoPreviewModal').classList.add('hidden');
+            const player = document.getElementById('videoPreviewPlayer');
+            player.pause();
+            player.src = '';
+        }
+        
+        // Utility functions
+        function showNotification(message, type = 'info') {
+            const notification = document.createElement('div');
+            notification.className = `fixed top-4 right-4 px-6 py-3 rounded-lg shadow-lg text-white z-50 transform translate-x-full transition-transform duration-300 ${
+                type === 'success' ? 'bg-green-500' : 
+                type === 'error' ? 'bg-red-500' : 
+                type === 'warning' ? 'bg-yellow-500' : 'bg-blue-500'
+            }`;
+            
+            notification.innerHTML = `
+                <div class="flex items-center">
+                    <i class="fas ${
+                        type === 'success' ? 'fa-check-circle' : 
+                        type === 'error' ? 'fa-exclamation-circle' : 
+                        type === 'warning' ? 'fa-exclamation-triangle' : 'fa-info-circle'
+                    } mr-2"></i>
+                    <span>${message}</span>
+                    <button onclick="this.parentElement.parentElement.remove()" class="ml-4 text-white hover:text-gray-200">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+            `;
+            
+            document.body.appendChild(notification);
+            
+            setTimeout(() => {
+                notification.classList.remove('translate-x-full');
+                notification.classList.add('translate-x-0');
+            }, 100);
+            
+            setTimeout(() => {
+                notification.classList.remove('translate-x-0');
+                notification.classList.add('translate-x-full');
+                setTimeout(() => {
+                    if (document.body.contains(notification)) {
+                        document.body.removeChild(notification);
+                    }
+                }, 300);
+            }, 5000);
+        }
+        
+        // Auto-hide messages after 5 seconds
+        document.addEventListener('DOMContentLoaded', function() {
+            const messages = document.querySelectorAll('.bg-green-100, .bg-red-100');
+            messages.forEach(message => {
+                setTimeout(() => {
+                    message.style.opacity = '0';
+                    setTimeout(() => {
+                        message.remove();
+                    }, 300);
+                }, 5000);
+            });
+        });
+        
+        // Keyboard shortcuts
+        document.addEventListener('keydown', function(e) {
+            // Escape pour fermer les modales
+            if (e.key === 'Escape') {
+                closeModuleModal();
+                closeVideoModal();
+                closeVideoPreviewModal();
+                
+                const sidenav = document.getElementById('sidenav');
+                const overlay = document.getElementById('overlay');
+                
+                if (sidenav.classList.contains('open')) {
+                    sidenav.classList.remove('open');
+                    overlay.classList.remove('active');
+                    document.body.classList.remove('overflow-hidden');
+                }
+            }
+            
+            // Ctrl/Cmd + M pour nouveau module
+            if ((e.ctrlKey || e.metaKey) && e.key === 'm') {
+                e.preventDefault();
+                showModuleModal();
+            }
+            
+            // Ctrl/Cmd + S pour sauvegarder (si modal ouverte)
+            if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+                const moduleModal = document.getElementById('moduleModal');
+                const videoModal = document.getElementById('videoModal');
+                
+                if (!moduleModal.classList.contains('hidden')) {
+                    e.preventDefault();
+                    document.getElementById('moduleForm').submit();
+                } else if (!videoModal.classList.contains('hidden')) {
+                    e.preventDefault();
+                    document.getElementById('videoForm').submit();
+                }
+            }
+        });
+        
+        // Handle window resize
+        window.addEventListener('resize', function() {
+            const sidenav = document.getElementById('sidenav');
+            const content = document.getElementById('content');
+            const overlay = document.getElementById('overlay');
+            
+            if (window.innerWidth >= 768) {
+                sidenav.classList.remove('open');
+                overlay.classList.remove('active');
+                document.body.classList.remove('overflow-hidden');
+                
+                const savedState = localStorage.getItem('adminSidenavCollapsed');
+                if (savedState === 'true') {
+                    sidenav.classList.add('collapsed');
+                    content.classList.add('nav-collapsed');
+                } else {
+                    sidenav.classList.remove('collapsed');
+                    content.classList.remove('nav-collapsed');
+                }
+            }
+        });
+        
+        // Drag and drop functionality for video files
+        document.addEventListener('DOMContentLoaded', function() {
+            const videoModal = document.getElementById('videoModal');
+            const videoFileInput = document.getElementById('videoFile');
+            
+            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                videoModal.addEventListener(eventName, preventDefaults, false);
+            });
+            
+            function preventDefaults(e) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+            
+            videoModal.addEventListener('dragenter', function(e) {
+                this.classList.add('bg-blue-50');
+            });
+            
+            videoModal.addEventListener('dragleave', function(e) {
+                this.classList.remove('bg-blue-50');
+            });
+            
+            videoModal.addEventListener('drop', function(e) {
+                this.classList.remove('bg-blue-50');
+                const files = e.dataTransfer.files;
+                
+                if (files.length > 0) {
+                    const file = files[0];
+                    if (file.type.startsWith('video/')) {
+                        videoFileInput.files = files;
+                        showNotification(`Fichier glissé-déposé: ${file.name}`, 'success');
+                    } else {
+                        showNotification('Veuillez sélectionner un fichier vidéo', 'error');
+                    }
+                }
+            });
+        });
+        
+        // Performance monitoring
+        if ('performance' in window) {
+            window.addEventListener('load', function() {
+                setTimeout(function() {
+                    const perfData = performance.getEntriesByType('navigation')[0];
+                    if (perfData && perfData.loadEventEnd - perfData.loadEventStart > 3000) {
+                        console.warn('Page load time is slow:', perfData.loadEventEnd - perfData.loadEventStart, 'ms');
+                    }
+                }, 0);
+            });
+        }
+        
+        // Service Worker registration for offline support
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/sw.js').catch(function(error) {
+                console.log('Service Worker registration failed:', error);
+            });
+        }
+        
+        console.log('Formation Content Manager initialized successfully');
+    </script>
+</body>
+</html>

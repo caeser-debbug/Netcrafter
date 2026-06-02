@@ -1,0 +1,61 @@
+Options -Indexes
+
+# ── Security Headers ──────────────────────────────────────────────────────────
+<IfModule mod_headers.c>
+    Header always set X-Frame-Options "SAMEORIGIN"
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+    Header always set Permissions-Policy "camera=(), microphone=(), geolocation=(self), payment=()"
+    Header always set X-XSS-Protection "1; mode=block"
+
+    # Masquer la version PHP et le serveur
+    Header always unset X-Powered-By
+    Header unset X-Powered-By
+
+    # HSTS — actif uniquement sur HTTPS (prod)
+    Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" env=HTTPS
+</IfModule>
+
+# ── Masquer version PHP ───────────────────────────────────────────────────────
+php_flag expose_php Off
+
+# ── Sécurité des cookies de session ──────────────────────────────────────────
+php_value session.cookie_httponly 1
+php_value session.cookie_samesite Strict
+php_flag  session.cookie_secure   Off
+
+# ── Bloquer méthode TRACE (Cross-Site Tracing) ───────────────────────────────
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteCond %{REQUEST_METHOD} ^TRACE
+    RewriteRule .* - [F,L]
+
+    # Redirect sitemap.xml → sitemap.php
+    RewriteRule ^sitemap\.xml$ sitemap.php [L]
+
+    # Force HTTPS en production (décommenter quand le SSL est actif)
+    # RewriteCond %{HTTPS} off
+    # RewriteCond %{HTTP_HOST} !^localhost
+    # RewriteCond %{HTTP_HOST} !^127\.0\.0\.1
+    # RewriteRule ^(.*)$ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+</IfModule>
+
+# ── Compression & Cache ───────────────────────────────────────────────────────
+<IfModule mod_deflate.c>
+    AddOutputFilterByType DEFLATE text/html text/css application/javascript application/json application/xml text/plain
+</IfModule>
+
+<IfModule mod_expires.c>
+    ExpiresActive On
+    ExpiresByType image/png            "access plus 1 month"
+    ExpiresByType image/jpg            "access plus 1 month"
+    ExpiresByType image/webp           "access plus 1 month"
+    ExpiresByType text/css             "access plus 1 week"
+    ExpiresByType application/javascript "access plus 1 week"
+    ExpiresByType application/json     "access plus 1 day"
+</IfModule>
+
+# ── Protect sensitive files ───────────────────────────────────────────────────
+<FilesMatch "\.(sql|env|log|sh|bak)$">
+    Require all denied
+</FilesMatch>

@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="fr" class="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hors ligne - Netcrafter Formations</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        .offline-gradient {
+            background: linear-gradient(135deg, #3B82F6 0%, #1E40AF 100%);
+        }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen flex items-center justify-center">
+    <div class="max-w-md mx-auto text-center p-8">
+        <!-- Logo -->
+        <div class="mb-8">
+            <div class="offline-gradient w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-4">
+                <i class="fas fa-wifi-slash text-white text-2xl"></i>
+            </div>
+            <h1 class="text-2xl font-bold text-gray-800 mb-2">Mode hors ligne</h1>
+        </div>
+        
+        <!-- Message principal -->
+        <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
+            <i class="fas fa-exclamation-triangle text-yellow-500 text-4xl mb-4"></i>
+            <h2 class="text-xl font-semibold text-gray-800 mb-3">Connexion internet requise</h2>
+            <p class="text-gray-600 mb-4">
+                Il seems que vous n'êtes pas connecté à internet. Certaines fonctionnalités de Netcrafter Formations nécessitent une connexion active.
+            </p>
+        </div>
+        
+        <!-- Actions -->
+        <div class="space-y-4">
+            <button onclick="checkConnection()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-6 rounded-lg transition-colors">
+                <i class="fas fa-sync-alt mr-2"></i>
+                Vérifier la connexion
+            </button>
+            
+            <button onclick="goBack()" class="w-full bg-gray-200 hover:bg-gray-300 text-gray-700 font-medium py-3 px-6 rounded-lg transition-colors">
+                <i class="fas fa-arrow-left mr-2"></i>
+                Retour
+            </button>
+        </div>
+        
+        <!-- Conseils -->
+        <div class="mt-8 text-left bg-blue-50 rounded-lg p-4">
+            <h3 class="font-semibold text-blue-800 mb-2">
+                <i class="fas fa-lightbulb mr-2"></i>
+                Conseils :
+            </h3>
+            <ul class="text-sm text-blue-700 space-y-1">
+                <li>• Vérifiez votre connexion WiFi ou données mobiles</li>
+                <li>• Essayez de recharger la page</li>
+                <li>• Certaines formations peuvent être consultées hors ligne</li>
+            </ul>
+        </div>
+        
+        <!-- Status de connexion -->
+        <div id="connection-status" class="mt-4 p-3 rounded-lg hidden">
+            <span id="status-text"></span>
+        </div>
+    </div>
+
+    <script>
+        // Vérifier la connexion
+        function checkConnection() {
+            const statusDiv = document.getElementById('connection-status');
+            const statusText = document.getElementById('status-text');
+            
+            statusDiv.classList.remove('hidden', 'bg-green-100', 'bg-red-100', 'text-green-800', 'text-red-800');
+            statusText.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Vérification...';
+            statusDiv.classList.add('bg-yellow-100', 'text-yellow-800');
+            statusDiv.classList.remove('hidden');
+            
+            // Tenter une requête vers le serveur
+            fetch('https://netcrafterniger.com/formation/formations.php', { 
+                method: 'HEAD',
+                cache: 'no-cache'
+            })
+            .then(response => {
+                if (response.ok) {
+                    statusText.innerHTML = '<i class="fas fa-check-circle mr-2"></i>Connexion rétablie !';
+                    statusDiv.classList.remove('bg-yellow-100', 'text-yellow-800');
+                    statusDiv.classList.add('bg-green-100', 'text-green-800');
+                    
+                    setTimeout(() => {
+                        window.location.href = 'https://netcrafterniger.com/formation/formations.php';
+                    }, 1500);
+                } else {
+                    throw new Error('Pas de réponse');
+                }
+            })
+            .catch(() => {
+                statusText.innerHTML = '<i class="fas fa-times-circle mr-2"></i>Toujours hors ligne';
+                statusDiv.classList.remove('bg-yellow-100', 'text-yellow-800');
+                statusDiv.classList.add('bg-red-100', 'text-red-800');
+            });
+        }
+        
+        // Retour
+        function goBack() {
+            if (window.history.length > 1) {
+                window.history.back();
+            } else {
+                window.location.href = 'https://netcrafterniger.com/formation/formations.php';
+            }
+        }
+        
+        // Écouter les changements de connexion
+        window.addEventListener('online', () => {
+            checkConnection();
+        });
+        
+        window.addEventListener('offline', () => {
+            const statusDiv = document.getElementById('connection-status');
+            const statusText = document.getElementById('status-text');
+            
+            statusText.innerHTML = '<i class="fas fa-wifi-slash mr-2"></i>Connexion perdue';
+            statusDiv.classList.remove('hidden', 'bg-green-100', 'bg-yellow-100', 'text-green-800', 'text-yellow-800');
+            statusDiv.classList.add('bg-red-100', 'text-red-800');
+        });
+        
+        // Vérification automatique au chargement
+        setTimeout(checkConnection, 1000);
+    </script>
+</body>
+</html>
